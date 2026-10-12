@@ -1,0 +1,95 @@
+name: Windows About V2 screenshots
+
+on:
+  push:
+    branches: [windows-about-demo]
+    paths:
+      - .github/workflows/windows-about-v2.yml
+      - .github/scripts/windows-about-v2.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-about-v2-screenshots
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    if: github.repository == 'zonemeen/opencode'
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      OPENCODE_CHANNEL: local
+      OPENCODE_CAPTURE_SHA: 59ae6145a81749c6e56733cbd1fdcf4b0597e878
+      OPENCODE_CAPTURE_SOURCE: ${{ github.workspace }}/source
+      OPENCODE_CAPTURE_OUTPUT: ${{ github.workspace }}/windows-about-artifacts
+      COREPACK_ENABLE_PROJECT_SPEC: "0"
+      COREPACK_ENABLE_STRICT: "0"
+      npm_config_package_manager_strict: "false"
+      pnpm_config_verify_deps_before_run: "false"
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Check out screenshot tools
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: capture
+          persist-credentials: false
+
+      - name: Check out the exact PR code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ env.OPENCODE_CAPTURE_SHA }}
+          path: source
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+
+      - name: Set up the repository's Bun version
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-windows-x64-baseline.zip
+
+      - name: Set up pnpm for script execution
+        run: |
+          corepack enable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          corepack prepare pnpm@11.9.0 --activate
+
+      - name: Install locked dependencies
+        working-directory: source
+        run: bun install --frozen-lockfile --linker hoisted
+
+      - name: Read the source version
+        working-directory: source
+        run: |
+          $version = node -p "require('./packages/desktop/package.json').version"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "OPENCODE_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Install Electron and prepare application icons
+        working-directory: source/packages/desktop
+        run: |
+          pnpm --pm-on-fail=ignore exec install-electron
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm --pm-on-fail=ignore exec bun ./scripts/copy-icons.ts dev
+
+      - name: Build the real desktop application
+        working-directory: source/packages/desktop
+        run: pnpm --pm-on-fail=ignore exec electron-vite build
+
+      - name: Capture Windows Help and About
+        timeout-minutes: 8
+        run: node capture/.github/scripts/windows-about-v2.mjs
+
+      - name: Upload screenshots and verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-about-v2-evidence
+          path: windows-about-artifacts
+          if-no-files-found: warn
+          retention-days: 30
