@@ -1,0 +1,71 @@
+{
+  "passed": true,
+  "platform": "win32",
+  "sourceSHA": "59ae6145a81749c6e56733cbd1fdcf4b0597e878",
+  "expectedVersion": "2.0.27",
+  "environment": "GitHub Actions Windows runner; real Electron desktop and source CLI; no browser platform fixture or mock server",
+  "screenshots": [
+    {
+      "name": "windows-app-ready.png",
+      "method": "Windows System.Drawing CopyFromScreen (entire desktop)",
+      "renderer": "windows-app-ready-renderer.png"
+    },
+    {
+      "name": "windows-about-menu.png",
+      "method": "Windows System.Drawing CopyFromScreen (entire desktop)",
+      "renderer": "windows-about-menu-renderer.png"
+    },
+    {
+      "name": "windows-about-page.png",
+      "method": "Windows System.Drawing CopyFromScreen (entire desktop)",
+      "renderer": "windows-about-page-renderer.png"
+    },
+    {
+      "name": "windows-about-reopened.png",
+      "method": "Windows System.Drawing CopyFromScreen (entire desktop)",
+      "renderer": "windows-about-reopened-renderer.png"
+    }
+  ],
+  "cycles": [
+    {
+      "cycle": 1,
+      "aboutSelected": true,
+      "versionVisible": "2.0.27",
+      "from": "first-launch app"
+    },
+    {
+      "cycle": 2,
+      "aboutSelected": true,
+      "versionVisible": "2.0.27",
+      "from": "Preferences"
+    }
+  ],
+  "os": {
+    "Caption": "Microsoft Windows Server 2025 Datacenter",
+    "Version": "10.0.26100",
+    "BuildNumber": "26100",
+    "OSArchitecture": "64-bit"
+  },
+  "app": {
+    "name": "OpenCode Dev",
+    "version": "2.0.27",
+    "platform": "win32",
+    "pid": 2936,
+    "electron": "44.4.5",
+    "userData": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\opencode-about-capture-kFIWN0\\desktop"
+  },
+  "display": {
+    "x": 0,
+    "y": 0,
+    "width": 1024,
+    "height": 720
+  },
+  "server": {
+    "mode": "source-cli",
+    "mocked": false,
+    "version": "2.0.27",
+    "pid": 2616,
+    "url": "http://0.0.0.0:3084"
+  },
+  "rendererErrors": []
+}
