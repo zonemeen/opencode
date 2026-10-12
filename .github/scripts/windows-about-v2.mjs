@@ -39,6 +39,7 @@ let traced = false
 
 try {
   summary.os = JSON.parse((await powershell("Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture | ConvertTo-Json -Compress")).stdout)
+  progress("Launching native Electron")
   application = await playwright._electron.launch({
     executablePath: require("electron"),
     args: [desktop, "--lang=en-US"],
@@ -59,6 +60,7 @@ try {
     },
     timeout: 180_000,
   })
+  progress("Electron launcher connected")
   application.process().stdout?.on("data", (value) => logs.push(`[stdout] ${value}`))
   application.process().stderr?.on("data", (value) => logs.push(`[stderr] ${value}`))
   application.on("console", (message) => logs.push(`[main:${message.type()}] ${message.text()}`))
@@ -81,6 +83,7 @@ try {
     electron: process.versions.electron,
     userData: app.getPath("userData"),
   }))
+  progress(`Native Electron PID ${summary.app.pid}; version ${summary.app.version}`)
   assert.equal(summary.app.platform, "win32")
   assert.equal(summary.app.name, "OpenCode Dev")
   assert.equal(summary.app.version, manifest.version)
@@ -98,7 +101,9 @@ try {
   // Fresh-profile onboarding runs normally against the real source server. No storage is seeded.
   const menu = page.getByRole("button", { name: "OpenCode menu", exact: true })
   await expect(menu).toBeEnabled({ timeout: 180_000 })
+  progress("Production menu enabled")
   await expect(page.locator('[data-component="startup-overlay"]')).toBeHidden({ timeout: 180_000 })
+  progress("Startup overlay dismissed")
   const registration = join(isolated, "desktop", "opencode", "service-local.json")
   server = JSON.parse(await readFile(registration, "utf8"))
   assert.equal(server.version, manifest.version)
@@ -126,6 +131,7 @@ try {
     }
   }
   summary.passed = true
+  progress("Both native About navigation checks passed")
 } catch (error) {
   summary.error = error.stack ?? String(error)
   if (page && !page.isClosed()) {
@@ -133,31 +139,73 @@ try {
     await writeFile(join(output, "failure.html"), await page.content().catch(() => "")).catch(() => {})
   }
 } finally {
-  if (traced) await application.context().tracing.stop({ path: join(output, "trace.zip") }).catch(() => {})
-  if (application) {
-    // The timer is a teardown deadline, never UI synchronization. Kill only the app this script launched.
-    const timer = setTimeout(() => {
-      if (application.process().exitCode === null) spawnSync("taskkill", ["/PID", String(application.process().pid), "/T", "/F"], { windowsHide: true })
-    }, 15_000)
-    await application.close().catch(() => {})
-    clearTimeout(timer)
-    await cp(join(isolated, "desktop", "logs"), join(output, "desktop-logs"), { recursive: true }).catch(() => {})
-  }
-  // Its registration lives in the fresh unique test root, so this cannot target the user's installed service.
-  if (!server) server = await readFile(join(isolated, "desktop", "opencode", "service-local.json"), "utf8").then(JSON.parse).catch(() => undefined)
-  if (server?.pid) spawnSync("taskkill", ["/PID", String(server.pid), "/T", "/F"], { windowsHide: true })
+  // Save the evidence before teardown: Electron's close promise can remain pending after Windows exits.
   summary.rendererErrors = errors
   await writeFile(join(output, "summary.json"), JSON.stringify(summary, null, 2))
   await writeFile(join(output, "console.log"), logs.join("\n"))
+  console.log(JSON.stringify(summary, null, 2))
+  progress("Evidence saved; starting bounded cleanup")
+  if (traced)
+    await bounded(application.context().tracing.stop({ path: join(output, "trace.zip") }), "trace stop", 15_000)
+  if (application) {
+    const closed = await bounded(application.close(), "Electron close", 15_000)
+    // Playwright's launcher can exit before the native Electron app. Use the PID read inside Electron.
+    if (!closed) {
+      const pid = summary.app?.pid ?? application.process().pid
+      progress(`Closing capture app PID ${pid}`)
+      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, timeout: 15_000 })
+    }
+    await bounded(
+      cp(join(isolated, "desktop", "logs"), join(output, "desktop-logs"), { recursive: true }),
+      "desktop log copy",
+      10_000,
+    )
+  }
+  // Its registration lives in the fresh unique test root, so this cannot target the user's installed service.
+  if (!server) server = await readFile(join(isolated, "desktop", "opencode", "service-local.json"), "utf8").then(JSON.parse).catch(() => undefined)
+  if (server?.pid) {
+    progress(`Closing isolated capture service PID ${server.pid}`)
+    spawnSync("taskkill", ["/PID", String(server.pid), "/T", "/F"], { windowsHide: true, timeout: 15_000 })
+  }
+  progress("Capture cleanup finished")
+  await writeFile(join(output, "console.log"), logs.join("\n"))
 }
-console.log(JSON.stringify(summary, null, 2))
-process.exitCode = summary.passed ? 0 : 1
+// Flush output, then exit explicitly so orphaned Playwright transport handles cannot hold the CI step open.
+await new Promise((resolve) => process.stdout.write(`Capture result: ${summary.passed ? "passed" : "failed"}\n`, resolve))
+process.exit(summary.passed ? 0 : 1)
+
+function progress(message) {
+  const line = `[capture] ${new Date().toISOString()} ${message}`
+  logs.push(line)
+  console.log(line)
+}
+
+async function bounded(operation, name, milliseconds) {
+  let timer
+  try {
+    return await Promise.race([
+      operation.then(() => true, (error) => {
+        progress(`${name} failed: ${error}`)
+        return false
+      }),
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          progress(`${name} reached cleanup deadline`)
+          resolve(false)
+        }, milliseconds)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 async function powershell(script) {
   return exec("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 30_000 })
 }
 
 async function capture(name) {
+  progress(`Capturing ${name}`)
   await page.bringToFront()
   await page.screenshot({ path: join(output, `${name}-renderer.png`) })
   const destination = join(output, `${name}.png`).replaceAll("'", "''")
@@ -178,5 +226,6 @@ try {
   $bitmap.Dispose()
 }
 `)
+  progress(`Saved ${name}`)
   summary.screenshots.push({ name: `${name}.png`, method: "Windows System.Drawing CopyFromScreen (entire desktop)", renderer: `${name}-renderer.png` })
 }
