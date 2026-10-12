@@ -73,13 +73,16 @@ jobs:
       - name: Install Electron and prepare application icons
         working-directory: source/packages/desktop
         run: |
-          pnpm --pm-on-fail=ignore exec install-electron
+          pnpm --pm-on-fail=ignore exec node -e "require('electron/install.js')"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm --pm-on-fail=ignore exec bun ./scripts/copy-icons.ts dev
 
       - name: Build the real desktop application
         working-directory: source/packages/desktop
-        run: pnpm --pm-on-fail=ignore exec electron-vite build
+        run: |
+          $vite = node -p "require('node:path').join(require.resolve('electron-vite/package.json'), '../bin/electron-vite.js')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm --pm-on-fail=ignore exec node $vite build
 
       - name: Capture Windows Help and About
         timeout-minutes: 8
