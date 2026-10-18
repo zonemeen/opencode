@@ -14,6 +14,7 @@ import { Global } from "@opencode/util/global"
 import { Effect, Fiber, Layer, Logger, Schedule, Schema, Scope } from "effect"
 import { eq, sql } from "drizzle-orm"
 import type { SqlClient } from "effect/sql/SqlClient"
+import { withEnv } from "./fixture/env"
 import { tmpdir } from "./fixture/tmpdir"
 import path from "path"
 
@@ -876,12 +877,15 @@ describe("V1Migration database workflow", () => {
     `)
   })
 
-  const database = <A, E>(effect: Effect.Effect<A, E, Database.Service | Global.Service | Scope.Scope>) =>
+  const database = <A, E>(
+    effect: Effect.Effect<A, E, Database.Service | Global.Service | Scope.Scope>,
+    legacy = true,
+  ) =>
     run(
       Effect.gen(function* () {
         const db = yield* makeDb
         yield* DatabaseMigration.apply(db)
-        yield* createLegacyTables(db)
+        if (legacy) yield* createLegacyTables(db)
         return yield* effect.pipe(Effect.provideService(Database.Service, { db }))
       }),
     )
@@ -894,6 +898,26 @@ describe("V1Migration database workflow", () => {
         expect(yield* V1Migration.status()).toEqual({ status: "completed" })
         expect(yield* V1Migration.run()).toEqual({ status: "completed" })
       }),
+    )
+  })
+
+  test("leaves a current database unchanged when there is no migration source", async () => {
+    await using tmp = await tmpdir()
+    await database(
+      withEnv({ OPENCODE_DB: undefined }, () =>
+        Effect.gen(function* () {
+          const database = yield* Database.Service
+          yield* database.db.run(
+            sql`INSERT INTO event (id, aggregate_id, seq, created, type, data) VALUES ('event_current', 'ses_current', 0, 1, 'session.renamed.1', '{}')`,
+          )
+
+          expect(yield* V1Migration.status()).toEqual({ status: "completed" })
+          expect(yield* V1Migration.run()).toEqual({ status: "completed" })
+          expect(yield* database.db.all(sql`SELECT id FROM event`)).toEqual([{ id: "event_current" }])
+          expect(yield* database.db.get(sql`SELECT value FROM kv WHERE key = 'migration.v1-v2'`)).toBeUndefined()
+        }).pipe(Effect.provideService(Global.Service, Global.make({ data: tmp.path }))),
+      ),
+      false,
     )
   })
 
@@ -926,7 +950,7 @@ describe("V1Migration database workflow", () => {
     )
   })
 
-  test("imports previous V2 sessions and messages containing apostrophes", async () => {
+  test.each(["fresh", "empty legacy"])("imports previous V2 history into a %s database", async (target) => {
     await using tmp = await tmpdir()
     const filename = path.join(tmp.path, "opencode-next.db")
     const sqlite = await import("bun:sqlite")
@@ -967,81 +991,101 @@ describe("V1Migration database workflow", () => {
         ('msg_orphan', 'ses_orphan', 'user', 0, 12, 13, '{"text":"orphan","time":{"created":12}}');
     `)
     source.close()
+    const original = await Bun.file(filename).arrayBuffer()
 
     await database(
-      Effect.gen(function* () {
-        const { db } = yield* Database.Service
-        yield* db.run(sql`
+      withEnv({ OPENCODE_DB: undefined }, () =>
+        Effect.gen(function* () {
+          const { db } = yield* Database.Service
+          yield* db.run(sql`
           INSERT INTO project (id, worktree, name, time_created, time_updated, sandboxes)
           VALUES ('next-project', '/tmp/current', 'Current project', 1, 2, '[]')
         `)
-        yield* db.run(sql`
+          yield* db.run(sql`
           INSERT INTO session_v2 (id, project_id, slug, directory, title, version, time_created, time_updated)
           VALUES ('ses_existing', 'next-project', 'current-existing', '/tmp/current', 'Current existing', '2', 1, 2)
         `)
-        yield* db.run(sql`
+          yield* db.run(sql`
           INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
           VALUES ('msg_current_existing', 'ses_existing', 'user', 0, 1, 2, '{"text":"current","time":{"created":1}}')
         `)
+          yield* db.run(
+            sql`INSERT INTO event (id, aggregate_id, seq, created, type, data) VALUES ('event_current', 'ses_existing', 1, 2, 'session.renamed.1', '{"title":"Current existing"}')`,
+          )
 
-        expect(yield* V1Migration.status()).toEqual({
-          status: "required",
-        })
-        expect(yield* V1Migration.run({ nextDatabasePath: filename })).toEqual({ status: "completed" })
-        expect(yield* V1Migration.status()).toEqual({
-          status: "completed",
-        })
-        expect(yield* db.get(sql`SELECT title, agent, model FROM session_v2 WHERE id = 'ses_next'`)).toEqual({
-          title: "Imported",
-          agent: "build",
-          model: '{"id":"model","providerID":"provider"}',
-        })
-        expect(
-          yield* db
-            .select({ directory: SessionTable.directory })
-            .from(SessionTable)
-            .where(eq(SessionTable.id, SessionSchema.ID.make("ses_next")))
-            .get(),
-        ).toEqual({ directory: process.platform === "win32" ? "C:\\Users\\sewer" : "C:/Users/sewer" })
-        expect(yield* db.all(sql`SELECT id, seq, data FROM session_message WHERE session_id = 'ses_next'`)).toEqual([
-          {
-            id: "msg_next",
+          expect(yield* V1Migration.status()).toEqual({
+            status: "required",
+          })
+          expect(yield* V1Migration.run()).toEqual({ status: "completed" })
+          expect(yield* V1Migration.status()).toEqual({
+            status: "completed",
+          })
+          expect(yield* db.get(sql`SELECT title, agent, model FROM session_v2 WHERE id = 'ses_next'`)).toEqual({
+            title: "Imported",
+            agent: "build",
+            model: '{"id":"model","providerID":"provider"}',
+          })
+          expect(
+            yield* db
+              .select({ directory: SessionTable.directory })
+              .from(SessionTable)
+              .where(eq(SessionTable.id, SessionSchema.ID.make("ses_next")))
+              .get(),
+          ).toEqual({ directory: process.platform === "win32" ? "C:\\Users\\sewer" : "C:/Users/sewer" })
+          expect(yield* db.all(sql`SELECT id, seq, data FROM session_message WHERE session_id = 'ses_next'`)).toEqual([
+            {
+              id: "msg_next",
+              seq: 4,
+              data: '{"text":"from next\'s history","time":{"created":12}}',
+            },
+          ])
+          expect(yield* db.get(sql`SELECT seq, owner_id FROM event_sequence WHERE aggregate_id = 'ses_next'`)).toEqual({
             seq: 4,
-            data: '{"text":"from next\'s history","time":{"created":12}}',
-          },
-        ])
-        expect(yield* db.get(sql`SELECT seq, owner_id FROM event_sequence WHERE aggregate_id = 'ses_next'`)).toEqual({
-          seq: 4,
-          owner_id: null,
-        })
-        expect(yield* db.get(sql`SELECT title FROM session_v2 WHERE id = 'ses_existing'`)).toEqual({
-          title: "Current existing",
-        })
-        expect(yield* db.all(sql`SELECT id FROM session_message WHERE session_id = 'ses_existing'`)).toEqual([
-          { id: "msg_current_existing" },
-        ])
-        expect(yield* db.get(sql`SELECT project_id FROM session_v2 WHERE id = 'ses_orphan'`)).toEqual({
-          project_id: "global",
-        })
-        expect(yield* db.get(sql`SELECT name, worktree FROM project WHERE id = 'next-project'`)).toEqual({
-          name: "Current project",
-          worktree: "/tmp/current",
-        })
-        yield* db.run(sql`UPDATE project SET worktree = 'C:/Users/sewer' WHERE id = 'next-project'`)
-        expect(
-          yield* db
-            .select({ worktree: ProjectTable.worktree })
-            .from(ProjectTable)
-            .where(eq(ProjectTable.id, Project.ID.make("next-project")))
-            .get(),
-        ).toEqual({
-          worktree: AbsolutePath.make(process.platform === "win32" ? "C:\\Users\\sewer" : "C:/Users/sewer"),
-        })
-        expect(yield* db.get(sql`SELECT value FROM kv WHERE key = 'migration.v1-v2'`)).toEqual({
-          value: '{"phase":"completed"}',
-        })
-      }),
+            owner_id: null,
+          })
+          expect(yield* db.get(sql`SELECT title FROM session_v2 WHERE id = 'ses_existing'`)).toEqual({
+            title: "Current existing",
+          })
+          expect(yield* db.all(sql`SELECT id FROM session_message WHERE session_id = 'ses_existing'`)).toEqual([
+            { id: "msg_current_existing" },
+          ])
+          expect(yield* db.get(sql`SELECT project_id FROM session_v2 WHERE id = 'ses_orphan'`)).toEqual({
+            project_id: "global",
+          })
+          expect(yield* db.get(sql`SELECT name, worktree FROM project WHERE id = 'next-project'`)).toEqual({
+            name: "Current project",
+            worktree: "/tmp/current",
+          })
+          yield* db.run(sql`UPDATE project SET worktree = 'C:/Users/sewer' WHERE id = 'next-project'`)
+          expect(
+            yield* db
+              .select({ worktree: ProjectTable.worktree })
+              .from(ProjectTable)
+              .where(eq(ProjectTable.id, Project.ID.make("next-project")))
+              .get(),
+          ).toEqual({
+            worktree: AbsolutePath.make(process.platform === "win32" ? "C:\\Users\\sewer" : "C:/Users/sewer"),
+          })
+          expect(yield* db.get(sql`SELECT value FROM kv WHERE key = 'migration.v1-v2'`)).toEqual({
+            value: '{"phase":"completed"}',
+          })
+          expect(yield* V1Migration.run()).toEqual({ status: "completed" })
+          expect(yield* db.all(sql`SELECT id FROM session_v2 ORDER BY id`)).toEqual([
+            { id: "ses_existing" },
+            { id: "ses_next" },
+            { id: "ses_orphan" },
+          ])
+          expect(yield* db.all(sql`SELECT id FROM session_message ORDER BY id`)).toEqual([
+            { id: "msg_current_existing" },
+            { id: "msg_next" },
+            { id: "msg_orphan" },
+          ])
+          expect(yield* db.all(sql`SELECT id FROM event`)).toEqual(target === "fresh" ? [{ id: "event_current" }] : [])
+        }).pipe(Effect.provideService(Global.Service, Global.make({ data: tmp.path }))),
+      ),
+      target === "empty legacy",
     )
+    expect(await Bun.file(filename).arrayBuffer()).toEqual(original)
   })
 
   test("imports previous V2 databases missing newer nullable columns", async () => {

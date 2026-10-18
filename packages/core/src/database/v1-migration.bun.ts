@@ -490,15 +490,17 @@ export function transformSession(input: TransformInput): TransformResult {
   }
 }
 
-export function status(): Effect.Effect<Status, never, Database.Service> {
+export function status(): Effect.Effect<Status, never, Database.Service | Global.Service> {
   return Effect.gen(function* () {
-    const db = (yield* Database.Service).db
-    if (!(yield* hasLegacySessions(db))) return { status: "completed" as const }
-    const state = yield* readState(db)
     if (runtimeState.status === "running") return runtimeState
     if (runtimeState.status === "error") return runtimeState
+    const database = yield* Database.Service
+    const state = yield* readState(database.db)
     if (state?.phase === "completed") return { status: "completed" as const }
-    return { status: "required" as const }
+    if (state?.phase === "sessions" || (yield* hasLegacySessions(database.db))) return { status: "required" as const }
+    const global = yield* Global.Service
+    const total = yield* countNextSessions(nextPath({}, global.data))
+    return { status: total > 0 ? ("required" as const) : ("completed" as const) }
   })
 }
 
@@ -534,11 +536,15 @@ function updateProgress(progress: Progress) {
 export function run(options: Options = {}): Effect.Effect<RunResult, never, Database.Service | Global.Service> {
   return lock.withPermit(
     Effect.gen(function* () {
-      const db = (yield* Database.Service).db
+      const database = yield* Database.Service
+      const db = database.db
       const global = yield* Global.Service
       const state = yield* readState(db)
       if (state?.phase === "completed") return { status: "completed" as const }
-      if (!(yield* hasLegacySessions(db))) return { status: "completed" as const }
+      const legacy = yield* hasLegacySessions(db)
+      const source = nextPath(options, global.data)
+      const sourceTotal = yield* countNextSessions(source)
+      if (!legacy && sourceTotal === 0 && state === undefined) return { status: "completed" as const }
       const now = Date.now()
       yield* db.run(sql`
           INSERT OR IGNORE INTO project (id, worktree, time_created, time_updated, time_active, sandboxes)
@@ -548,7 +554,8 @@ export function run(options: Options = {}): Effect.Effect<RunResult, never, Data
         yield* db
           .transaction((tx) =>
             Effect.gen(function* () {
-              while (true) {
+              // Only V1 migrations have obsolete events to clear.
+              while (legacy) {
                 yield* tx.run(sql`
                     DELETE FROM event
                     WHERE rowid IN (SELECT rowid FROM event LIMIT ${EVENT_DELETE_BATCH_SIZE})
@@ -564,24 +571,25 @@ export function run(options: Options = {}): Effect.Effect<RunResult, never, Data
             }),
           )
           .pipe(Effect.orDie)
-      const sourceTotal = yield* countNextSessions(nextPath(options, global.data))
-      const legacyTotal = (yield* db.get<{ value: number }>(sql`SELECT COUNT(*) AS value FROM session`))?.value ?? 0
+      const legacyTotal = legacy
+        ? ((yield* db.get<{ value: number }>(sql`SELECT COUNT(*) AS value FROM session`))?.value ?? 0)
+        : 0
       const cursor = state?.phase === "sessions" ? state.cursor : undefined
       const migrated =
-        cursor !== undefined
+        legacy && cursor !== undefined
           ? ((yield* db.get<{ value: number }>(sql`SELECT COUNT(*) AS value FROM session WHERE id >= ${cursor}`))
               ?.value ?? 0)
           : 0
       const denominator = sourceTotal + legacyTotal
       updateProgress({ label: "Migrating sessions", numerator: migrated, denominator })
-      yield* importNextDatabase(db, nextPath(options, global.data), (completed) => {
+      yield* importNextDatabase(db, source, (completed) => {
         updateProgress({ label: "Migrating sessions", numerator: migrated + completed, denominator })
       })
       updateProgress({ label: "Migrating sessions", numerator: migrated + sourceTotal, denominator })
       const projects = new Set(
         (yield* db.all<{ id: string }>(sql`SELECT id FROM project`)).map((project) => project.id),
       )
-      while (true) {
+      while (legacy) {
         const state = yield* readState(db)
         const cursorValue = state?.phase === "sessions" ? state.cursor : undefined
         const nextID = yield* db.get<{ id: string; project_id: string }>(
