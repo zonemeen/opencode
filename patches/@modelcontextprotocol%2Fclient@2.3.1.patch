@@ -18,6 +18,50 @@ index 71cf630..4c33e3b 100644
  	if (resource) authorizationUrl.searchParams.set("resource", resourceIndicatorToString(resource));
  	return {
  		authorizationUrl,
+diff --git a/dist/index.d.cts b/dist/index.d.cts
+index d4244e7f112515415c28365980f2bcb0eb34ee61..6b2f70519b6d8e043b1fa82c968fa8b35bb7cb0c 100644
+--- a/dist/index.d.cts
++++ b/dist/index.d.cts
+@@ -551,7 +551,7 @@ interface OAuthClientProvider {
+    *
+    * Implementations must verify the returned resource matches the MCP server.
+    */
+-  validateResourceURL?(serverUrl: string | URL, resource?: string): Promise<URL | undefined>;
++  validateResourceURL?(serverUrl: string | URL, resource?: string): Promise<string | URL | undefined>;
+   /**
+    * If implemented, provides a way for the client to invalidate (e.g. delete) the specified
+    * credentials, in the case where the server has indicated that they are no longer valid.
+@@ -886,7 +886,7 @@ declare function isHttpsUrl(value?: string): boolean;
+  * verbatim instead of this URL's `href` (#1968); callers that emit the `resource`
+  * parameter themselves should do the same.
+  */
+-declare function selectResourceURL(serverUrl: string | URL, provider: OAuthClientProvider, resourceMetadata?: OAuthProtectedResourceMetadata): Promise<URL | undefined>;
++declare function selectResourceURL(serverUrl: string | URL, provider: OAuthClientProvider, resourceMetadata?: OAuthProtectedResourceMetadata): Promise<string | URL | undefined>;
+ /**
+  * Extract `resource_metadata`, `scope`, `error`, and `error_description` from a
+  * `WWW-Authenticate` header.
+diff --git a/dist/index.d.mts b/dist/index.d.mts
+index 3af7065405bbba4689dc114822727ec7a3ac4cbc..b1ca9b54a38d4714cdae94fa84dbe9b80c1f39ad 100644
+--- a/dist/index.d.mts
++++ b/dist/index.d.mts
+@@ -551,7 +551,7 @@ interface OAuthClientProvider {
+    *
+    * Implementations must verify the returned resource matches the MCP server.
+    */
+-  validateResourceURL?(serverUrl: string | URL, resource?: string): Promise<URL | undefined>;
++  validateResourceURL?(serverUrl: string | URL, resource?: string): Promise<string | URL | undefined>;
+   /**
+    * If implemented, provides a way for the client to invalidate (e.g. delete) the specified
+    * credentials, in the case where the server has indicated that they are no longer valid.
+@@ -886,7 +886,7 @@ declare function isHttpsUrl(value?: string): boolean;
+  * verbatim instead of this URL's `href` (#1968); callers that emit the `resource`
+  * parameter themselves should do the same.
+  */
+-declare function selectResourceURL(serverUrl: string | URL, provider: OAuthClientProvider, resourceMetadata?: OAuthProtectedResourceMetadata): Promise<URL | undefined>;
++declare function selectResourceURL(serverUrl: string | URL, provider: OAuthClientProvider, resourceMetadata?: OAuthProtectedResourceMetadata): Promise<string | URL | undefined>;
+ /**
+  * Extract `resource_metadata`, `scope`, `error`, and `error_description` from a
+  * `WWW-Authenticate` header.
 diff --git a/dist/index.mjs b/dist/index.mjs
 index c1a09a8..f5b0e1d 100644
 --- a/dist/index.mjs

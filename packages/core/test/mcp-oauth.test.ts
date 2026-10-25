@@ -378,6 +378,72 @@ describe("MCP OAuth", () => {
     expect(tokenRequests[0]?.get("resource")).toBe(url)
   })
 
+  test.each([
+    { path: "/mcp", resource: "" },
+    { path: "", resource: "" },
+    { path: "/mcp", resource: "/" },
+    { path: "/mcp", resource: "/mcp" },
+  ])("preserves advertised resource '$resource' for '$path' through OAuth", async (input) => {
+    const resources: (string | null)[] = []
+    const grants: (string | null)[] = []
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url)
+        if (url.pathname.startsWith("/.well-known/oauth-protected-resource"))
+          return Response.json({ resource: url.origin + input.resource, authorization_servers: [url.origin] })
+        if (url.pathname === "/.well-known/oauth-authorization-server")
+          return Response.json({
+            issuer: url.origin,
+            authorization_endpoint: `${url.origin}/authorize`,
+            token_endpoint: `${url.origin}/token`,
+            response_types_supported: ["code"],
+          })
+        if (request.method === "POST" && url.pathname === "/token") {
+          const body = new URLSearchParams(await request.text())
+          resources.push(body.get("resource"))
+          grants.push(body.get("grant_type"))
+          return Response.json({
+            access_token: "access",
+            token_type: "Bearer",
+            refresh_token: "refresh",
+            expires_in: 3600,
+          })
+        }
+        return new Response(null, { status: 404 })
+      },
+    })
+    const target = server.url.origin + input.path
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { authorization, url } = yield* start(target, { client_id: "client" })
+          resources.push(url.searchParams.get("resource"))
+          const redirect = url.searchParams.get("redirect_uri")
+          const state = url.searchParams.get("state")
+          if (!redirect || !state) throw new Error("Missing OAuth redirect parameters")
+          const callback = new URL(redirect)
+          callback.searchParams.set("code", "accepted")
+          callback.searchParams.set("state", state)
+          expect((yield* Effect.promise(() => fetch(callback))).status).toBe(200)
+          const tokens = yield* authorization.callback
+          const oauthProvider = yield* Effect.promise(() =>
+            connectProvider(
+              remote(target),
+              memoryCredentials([credential({ access: tokens.access, refresh: tokens.refresh, url: target })]),
+            ),
+          )
+          yield* Effect.promise(() => auth(oauthProvider, { serverUrl: target }))
+        }),
+      ),
+    ).finally(() => server.stop(true))
+
+    const resource = server.url.origin + input.resource
+    expect(resources).toEqual([resource, resource, resource])
+    expect(grants).toEqual(["authorization_code", "refresh_token"])
+  })
+
   test("discovers resource metadata without the query the transport dialed", async () => {
     const probes: string[] = []
     const server = Bun.serve({

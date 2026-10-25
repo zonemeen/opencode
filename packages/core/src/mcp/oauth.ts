@@ -175,8 +175,14 @@ export const provider = (options: Options): OAuthClientProvider => {
       // The transport dials the configured URL with extra query parameters and some servers echo
       // that back as the resource. Query is transport detail, not identity: the token stays bound
       // to the configured URL so a later refresh names the same resource the login did.
-      if (canonical.origin === identity.origin && canonical.pathname === identity.pathname) return identity
-      return canonical
+      if (
+        canonical.origin === identity.origin &&
+        canonical.pathname === identity.pathname &&
+        canonical.search !== identity.search
+      )
+        return identity
+      // Resource indicators are exact strings: URL serialization adds a slash to a bare origin.
+      return resource
     },
     ...(options.clientMetadataUrl ? { clientMetadataUrl: options.clientMetadataUrl } : {}),
     ...(redirect ? { state: () => redirect.state } : {}),
