@@ -152,6 +152,37 @@ describe("Git worktrees", () => {
 })
 
 describe("Git trees", () => {
+  it.live("repairs incomplete storage without discarding captured trees", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+      )
+      const project = AbsolutePath.make(path.join(root.path, "project"))
+      const storage = AbsolutePath.make(path.join(root.path, "storage"))
+      yield* Effect.promise(async () => {
+        await initGit(project)
+        await fs.writeFile(path.join(project, "file.txt"), "one\n")
+        await fs.mkdir(path.join(storage, "objects"), { recursive: true })
+      })
+      const git = yield* Git.Service
+      const repository = yield* git.repo.create({ worktree: project, gitDirectory: storage })
+      yield* git.index.refresh({ repository, scope: RelativePath.make(".") })
+      const before = yield* git.tree.write(repository)
+
+      yield* Effect.promise(async () => {
+        await fs.unlink(path.join(storage, "HEAD"))
+        await fs.writeFile(path.join(project, "file.txt"), "two\n")
+      })
+      const repaired = yield* git.repo.create({ worktree: project, gitDirectory: storage })
+      yield* git.tree.restore({
+        repository: repaired,
+        files: new Map([[RelativePath.make("file.txt"), before]]),
+      })
+      expect(yield* read(path.join(project, "file.txt"))).toBe("one\n")
+      expect((yield* Effect.promise(() => fs.readdir(root.path))).sort()).toEqual(["project", "storage"])
+    }),
+  )
   ;[0, 1, 128].forEach((exitCode) => {
     it.live(`refresh handles check-ignore exit ${exitCode}`, () =>
       Effect.gen(function* () {

@@ -470,7 +470,8 @@ const layer = Layer.effect(
         gitDirectory: input.gitDirectory,
         commonDirectory: input.gitDirectory,
       })
-      if (yield* fs.existsSafe(path.join(input.gitDirectory, "HEAD"))) {
+      // Reinitialize incomplete stores in place so their existing objects survive recovery.
+      if (yield* fs.existsSafe(input.gitDirectory)) {
         yield* initRepository({ ...input, directory: input.gitDirectory })
         return repository
       }

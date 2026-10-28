@@ -14,6 +14,38 @@ import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
 describe("Snapshot", () => {
+  testEffect(Layer.empty).live("retries repository initialization after the storage failure is removed", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          const project = path.join(tmp.path, "project")
+          yield* Effect.promise(async () => {
+            await fs.mkdir(project)
+            await fs.writeFile(path.join(project, "tracked.txt"), "one\n")
+            await initGit(project)
+            await fs.writeFile(path.join(tmp.path, "snapshot"), "blocked")
+          })
+          yield* Effect.gen(function* () {
+            const snapshot = yield* Snapshot.Service
+            expect(yield* snapshot.capture()).toBeUndefined()
+            expect(yield* read(path.join(tmp.path, "snapshot"))).toBe("blocked")
+            yield* Effect.promise(() => fs.unlink(path.join(tmp.path, "snapshot")))
+
+            const before = yield* snapshot.capture()
+            expect(before).toBeDefined()
+            if (!before) return
+            yield* Effect.promise(() => fs.writeFile(path.join(project, "tracked.txt"), "two\n"))
+            const after = yield* snapshot.capture()
+            expect(after).toBeDefined()
+            if (!after) return
+            expect(yield* snapshot.files({ from: before, to: after })).toEqual([RelativePath.make("tracked.txt")])
+          }).pipe(Effect.provide(snapshotLayer(tmp.path, project)))
+        }),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   testEffect(Layer.empty).live("keeps lazy repository discovery after the first caller is interrupted", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
